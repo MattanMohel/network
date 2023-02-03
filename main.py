@@ -7,7 +7,7 @@ LEARN_RATE = 0.01
 BATCH_SIZE = 32
 EPOCHS = 5
 
-class Acts:
+class Act:
     SIG  = "sigmoid"
     LIN  = "linear"
     TANH = "tanh"
@@ -17,20 +17,20 @@ class Acts:
         
     def sig(n):
         return 1 / (1 + math.e**-n)
-
+    
     def value(self, n):
         match self.acts:
-            case self.TANH: return math.tanh(n)
-            case self.SIG: return Acts.sig(n)
+            case self.TANH: return np.tanh(n)
+            case self.SIG: return Act.sig(n)
             case self.LIN: return n
 
     def deriv(self, n):
         match self.acts:
-            case self.TANH: return 1 - math.tanh(n)**2
-            case self.SIG: return Acts.sig(n) * (1 - Acts.sig(n))
+            case self.TANH: return 1 - np.tanh(n)**2
+            case self.SIG: return Act.sig(n) * (1 - Act.sig(n))
             case self.LIN: return n
 
-acts = Acts(Acts.SIG)
+ACTS = Act(Act.TANH)
 
 class Cost:
     QUAD = "quad"
@@ -54,14 +54,14 @@ class Data:
         learn_rate=LEARN_RATE, 
         batch_size=BATCH_SIZE, 
         epochs=EPOCHS, 
-        acts=acts, 
+        act=ACTS, 
         cost=COST, 
         verbose=True
     ):
         self.learn_rate = learn_rate
         self.batch_size = batch_size
         self.epochs = epochs
-        self.acts = acts
+        self.acts = act
         self.cost = cost
         self.verbose = verbose
 
@@ -79,7 +79,7 @@ class Network:
         self.b_errs  = [np.zeros(l) for l in form[1:]]
         self.b_acc   = [np.zeros(l) for l in form[1:]]
         self.sums    = [np.zeros(l) for l in form[1:]]
-        self.error   = [np.zeros(l) for l in form[1:]]
+        self.errs    = [np.zeros(l) for l in form[1:]]
         
     def __str__(self):
         w_shape = [w.shape for w in self.weights]
@@ -91,62 +91,96 @@ class Network:
 
     def act(self, n):
         '''Applies non-linearity function to value `n`'''
+        
         return self.params.acts.value(n)
 
     def d_act(self, n):
         '''Applies non-linearity derivative to value `n`'''
+        
         return self.params.acts.deriv(n)
 
     def cost(self, delta):
         '''Applies cost function to `delta = Y - X`'''
+        
         return self.params.cost.value(delta)
 
     def d_cost(self, delta):
         '''Applies cost derivative to `delta = Y - X`'''
+        
         return self.params.cost.deriv(delta)
 
     def clear_prop(self):
-        self.acts   = [np.zeros(l) for l in self.form]        
-        self.sums   = [np.zeros(l) for l in self.form[1:]]
-        self.errs   = [np.zeros(l) for l in self.form[1:]]
-        self.w_errs = [np.zeros(l) for l in self.form[1:]]
+        '''Resets propagation matrices to zero'''
+        
+        for i in range(self.LAYERS - 1):
+            self.acts[i+1].fill(0)       
+            self.sums[i].fill(0)
+            self.errs[i].fill(0)
+            self.w_errs[i].fill(0)
         
     def clear_accum(self):
-        self.b_acc = [np.zeros(l) for l in self.form[1:]]        
-        self.w_acc = [np.zeros((l2, l1)) for (l1, l2) in zip(self.form[:-1], self.form[1:])]
+        '''Resets accumulation matrices to zero'''
+        
+        for i in range(self.LAYERS - 1):
+            self.b_acc[i].fill(0)
+            self.w_acc[i].fill(0)
 
-    def forward_prop(self, input):
-        self.acts[0] = input
+    def forward_prop(self, X):
+        '''Forward passes an input, predicting an output'''
+        
+        self.acts[0] = X
 
         for l in range(self.LAYERS-1):
-            self.sums[l] = self.weights[l] @ self.acts[l] + self.biases[l]
+            np.matmul(
+                self.weights[l], 
+                self.acts[l], 
+                out=self.sums[l])
+            
+            self.sums[l] += self.biases[l]
+
             self.acts[l+1] = self.act(self.sums[l]) 
 
         return self.acts[-1]
 
-    def back_prop(self, input, exp):
+    def back_prop(self, X, Y):
+        '''Computes the model's error given an 
+        input and an expected output'''
+        
         self.clear_prop()
-        self.forward_prop(input)
-
-        self.errs[-1] = self.d_act(self.sums[-1]) * self.d_cost(exp - self.acts[-1])
+        self.forward_prop(X)
+        
+        np.multiply(
+            self.d_cost(Y - self.acts[-1]), 
+            self.d_act(self.sums[-1]), 
+            out=self.errs[-1])
 
         for l in range(1, self.LAYERS):
-            self.w_errs[-l] = self.errs[-l][:, None] @ self.acts[-(l + 1)][None, :]
+            np.matmul(
+                self.errs[-l][:,None], 
+                self.acts[-(l+1)][None,:], 
+                out=self.w_errs[-l])
 
             if l == self.LAYERS - 1:
                 break
-
-            self.errs[-(l + 1)] = self.weights[-l].T @ self.errs[-l] * self.d_act(self.sums[-(l + 1)])
+            
+            np.matmul(
+                self.weights[-l].T, 
+                self.errs[-l], 
+                out=self.errs[-(l+1)])
+            
+            self.errs[-(l+1)] *= self.d_act(self.sums[-(l+1)])
     
-    def accum_error(self):
+    def accum_err(self):
         for i in range(self.LAYERS - 1):
             self.b_acc[i] += self.errs[i]
             self.w_acc[i] += self.w_errs[i]
             
     def apply_gradient(self, samples):
+        lean_rate = self.params.learn_rate / samples
+        
         for i in range(self.LAYERS - 1):
-            self.weights[i] += self.w_acc[i] / samples
-            self.biases[i]  += self.b_acc[i] / samples
+            self.weights[i] += self.w_acc[i] * lean_rate
+            self.biases[i]  += self.b_acc[i] * lean_rate
       
     def train(self, Xs, Ys):
         '''Trains model on samples `Xs` with labels `Ys`'''
@@ -163,15 +197,15 @@ class Network:
             
             for i in range(n_samples):
                 self.back_prop(Xs[i], Ys[i])
-                self.accum_error()
+                self.accum_err()
                 
-                accum_samples += 1
+                accum_samples += 1  
+                is_last = i + 1 == n_samples
                 
-                last_sample = i + 1 == n_samples
-                
-                if accum_samples == self.params.batch_size or last_sample:
+                if accum_samples == self.params.batch_size or is_last:
                     self.apply_gradient(accum_samples)
-                    self.clear_accum()          
+                    self.clear_accum()              
+                    accum_samples = 0
             
             if self.params.verbose:
                 print(f'finished epoch {epoch} in {time.time() - beg}') 
@@ -194,7 +228,17 @@ def one_hot(n):
     encoder[n] = 1
     return encoder
 
-network = Network([784, 300, 100, 10], Data(epochs=2))
+# nn = Network([3, 5, 3], Data(verbose=False, epochs=100, batch_size=1, learn_rate=.03, act=Act(Act.TANH)))
+# X = np.array([-0.72, +0.99, -0.64])
+# Y = np.array([+0.33, +0.03, +0.91])
+
+# nn.train([X], [Y])
+# p, out = nn.predict(X)
+
+# print(out)
+# print(f'error: {Y - out}')
+
+network = Network([784, 300, 100, 10], Data(epochs=2, learn_rate=0.01, batch_size=16, act=Act(Act.SIG)))
                          
 (train_x, train_y), (test_x, test_y) = mnist.load_data()
 
